@@ -365,6 +365,7 @@ public class Simulator extends Observable {
                 // lock variable, then full (albeit heavy-handed) protection of memory and
                 // registers is assured.  Not as critical for reading from those resources.
                 Globals.memoryAndRegistersLock.lock();
+                boolean checkHandlerBkpt = false;
                 try {
                     // Handle pending interupts and traps first
                     long uip = ControlAndStatusRegisterFile.getValueNoNotify("uip"), uie = ControlAndStatusRegisterFile.getValueNoNotify("uie");
@@ -380,12 +381,14 @@ public class Simulator extends Observable {
                             if (handleInterrupt(InterruptController.claimExternal(), SimulationException.EXTERNAL_INTERRUPT, pc)) {
                                 pendingExternal = false;
                                 uip &= ~0x100;
+                                checkHandlerBkpt = true;
                             } else {
                                 return; // if the interrupt can't be handled, but the interrupt enable bit is high, thats an error
                             }
                         } else if (IE && (uip & 0x1) != 0 && (uie & ControlAndStatusRegisterFile.SOFTWARE_INTERRUPT) != 0) {
                             if (handleInterrupt(0, SimulationException.SOFTWARE_INTERRUPT, pc)) {
                                 uip &= ~0x1;
+                                checkHandlerBkpt = true;
                             } else {
                                 return; // if the interrupt can't be handled, but the interrupt enable bit is high, thats an error
                             }
@@ -393,11 +396,13 @@ public class Simulator extends Observable {
                             if (handleInterrupt(InterruptController.claimTimer(), SimulationException.TIMER_INTERRUPT, pc)) {
                                 pendingTimer = false;
                                 uip &= ~0x10;
+                                checkHandlerBkpt = true;
                             } else {
                                 return; // if the interrupt can't be handled, but the interrupt enable bit is high, thats an error
                             }
                         } else if (pendingTrap) { // if we have a pending trap and aren't handling an interrupt it must be handled
                             if (handleTrap(InterruptController.claimTrap(), pc - Instruction.INSTRUCTION_LENGTH)) { // account for that the PC has already been incremented
+                                checkHandlerBkpt = true;
                             } else {
                                 return;
                             }
@@ -406,6 +411,15 @@ public class Simulator extends Observable {
                     }
                     if (uip != ControlAndStatusRegisterFile.getValueNoNotify("uip")) {
                         ControlAndStatusRegisterFile.updateRegister("uip", uip);
+                    }
+
+                    if (checkHandlerBkpt) {
+                        //     Return if we've reached a breakpoint on the handler's entry point.
+                        if (ebreak || (breakPoints != null) &&
+                                (Arrays.binarySearch(breakPoints, RegisterFile.getProgramCounter()) >= 0)) {
+                            stopExecution(false, Reason.BREAKPOINT);
+                            return;
+                        }
                     }
 
                     // always handle interrupts and traps before quiting
